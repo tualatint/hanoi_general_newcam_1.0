@@ -1,0 +1,18 @@
+{
+  "episodes": 42,
+  "success": 42,
+  "success_rate": 1.0,
+  "mean_steps": 63.04761904761905,
+  "levels": {
+    "0": 21,
+    "1": 14,
+    "2": 7
+  },
+  "switches": {
+    "handoff_vision": 42
+  },
+  "wilson95": [
+    0.9161983874908382,
+    1
+  ]
+}

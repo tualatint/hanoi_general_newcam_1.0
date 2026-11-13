@@ -1,0 +1,71 @@
+# Audit — 8786 general newcam chain
+
+Audited live at `http://127.0.0.1:8786/` on 2026-11-13. The server was
+`hanoi_vservo_2026/scripts/realtime_general_newcam.py`, cwd
+`hanoi_vservo_2026`, seed loop 896250+, `max_steps=260`.
+
+## What it actually runs
+
+- Task: `(disk_idx, src, dst, target_level)`; single-move top-disk placement,
+  no full Hanoi size rule (`general_env.py:46-63`).
+- Policies: transport `P0/P1/P2` (selected by destination peg), insert
+  `bc_vservo_insert_v2b`, no fallback (`FALLBACK_CKPT=""`).
+- Observation: 18-D vision state + 1024x7 cloud with ghost points.
+- Active runtime extras:
+  - `N_SAMPLES=5` — transport action = mean of 5 policy samples;
+  - `INSERT_SAMPLES=1`;
+  - `TRANSPORT_TERMINAL_SERVO=0.5`, `TRANSPORT_FORCE_CLOSE=1`,
+    `TRANSPORT_LIFT_GATE=1`, `TRANSPORT_GRASP_CENTER_K=0.5`,
+    `TRANSPORT_GRASP_SETTLE=4`, carry-high rule, grasp-height gate;
+  - `VSERVO_STATIC_CACHE=1`, `VSERVO_VISION_SKIP=1`,
+    `VSERVO_ICP_WORKERS=1`;
+  - OSMesa; camera pose `results/camera_pose_latest.json`.
+
+## Cheating checks
+
+| check | result |
+|---|---|
+| GT object pose used to choose actions | **Pass.** Handoff uses `env._servo_err_raw` (vision); transport `done` is explicitly ignored as privileged (`realtime_general_newcam.py:316`). `transport_residual_servo.py` uses `_servo_err_raw`/`_disk_centre` (vision), FK, and gripper width; no GT object pose. |
+| Retry/reset of failed episodes | **Pass.** `ep_done += 1` for every episode; `ep_success += int(success)` (`:370-379`); no retry. |
+| Q-filter / best-of-N | **Pass.** No Q-filter; transport uses **mean of N=5** samples, not best-of-N (`_policy_act`). Insert N=1. |
+| Fallback/rescue inflating SR | **Pass.** `FALLBACK_CKPT=""`, `FALLBACK_STEPS=0`; all 42 log episodes `switch=handoff_vision`, no `correction`/`transport_fail`. |
+| Success predicate trivially true | **Pass.** `_is_seated` requires upright, at rest, target peg, correct support height, low velocity (`hanoi_env.py:390-407`). GT is used only for the evaluation predicate. |
+| Seed cherry-picking | **Not proven.** Live seeds 896250+; the session log shows a continuous loop; no disjointness check against v2b/P0/P1/P2 training seeds yet. |
+| Frozen n=200 protocol | **No.** 42-episode live session; Wilson 95% CI ~91.6–100%. |
+
+## Caveats (not cheating, but they change the claim)
+
+1. **Hybrid controller, not pure policy.** The 1.0 is transport specialists +
+   v2b insert + hand-coded vision servos/guards. The learned policy alone is
+   not the 1.0.
+2. **Test-time averaging.** `N_SAMPLES=5` on transport is a 5x inference
+   ensemble; it reduces variance and is not a single-sample policy result.
+3. **Scoped task.** Single-move random disk/peg/level, no full Hanoi size
+   rule; not the full 3-disk multi-move chain.
+4. **Fast path active.** Cache/vision-skip flags change the observation
+   schedule; the 1.0 is not the clean pipeline.
+5. **Task conditioning.** Destination peg selects the transport specialist and
+   the ghost target. Legitimate if the target is given; not target inference.
+6. **Per-episode sim resets.** Does not test the real-world no-reset /
+   terminal-safety constraint.
+7. **Checkpoint identity.** Insert is `bc_vservo_insert_v2b`, not the v4
+   expert-relative-loss checkpoint from `hanoi_vservo_errloss_1.0`.
+8. **Page text is stale.** It mentions “insert ss4 -> rescue fallback”; the
+   code has no fallback and uses v2b.
+
+## Certification tests before trusting the 1.0
+
+1. `SLOW=1` A/B (cache/skip off), fresh seed base, n>=200.
+2. `POLICY_ONLY=1` ablation (N=1, transport servos off, fast flags off) to
+   quantify the hand-coded contribution.
+3. Full multi-move Hanoi with the size rule, frozen n=200.
+4. Seed audit: 896250+ vs the v2b/P0/P1/P2 training seeds.
+5. Continuous no-reset run if real-world deployment is the target.
+
+## Verdict
+
+No evidence of GT leakage, retry, Q-filter, or fallback. The 1.0 is honest for
+this **42-episode live single-move session**, but it is a **hybrid vision
+controller with 5x transport action averaging and the fast vision schedule**,
+using the **v2b** insert checkpoint. It should not be presented as a pure-model,
+full-Hanoi, n=200 1.0 until the A/B and policy-only ablations pass.
