@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.log
+*.part
+data/*
+logs/*
+results/reproduced/
+!data/.gitkeep
+!logs/.gitkeep
+!results/webserver_8786_session.log
+runs/**/*.ckpt
