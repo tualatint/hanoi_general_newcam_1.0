@@ -1,6 +1,61 @@
 # Audit — 8786 general newcam chain
 
-Audited live at `http://127.0.0.1:8786/` on 2026-11-13. The server was
+## v1.1 update — single transport (audited 2026-11-16)
+
+The running 8786 server was updated from three destination specialists
+(`P0/P1/P2`) to **one transport policy**:
+`runs/bc_vservo_transport_gen_v2_uni_sem7/best.ckpt`. The insert policy is
+still `bc_vservo_insert_v2b`; `P0/P1/P2` are empty.
+
+What changed:
+
+- **Semantic 7th point-cloud channel**: `0 = other`, `1 = virtual goal`,
+  `2 = object to manipulate` (`vservo_env.py`). It is computed from the
+  vision-estimated disk centre/normal and the task disk colour — not from
+  simulator ground truth.
+- The server inspects each checkpoint config and binarises channel 6 for the
+  non-semantic insert policy; the semantic transport policy receives the
+  0/1/2 channel unchanged.
+- New insert **wedge-release** interlock (vision + gripper width) and a wider
+  grasp-height gate (`TRANSPORT_GRASP_GATE=1`, `[-15 mm, +25 mm]`).
+- `VSERVO_VISION_SKIP=0` (clean vision schedule), `VSERVO_STATIC_CACHE=1`,
+  `N_SAMPLES=5` transport averaging, `INSERT_SAMPLES=1`.
+
+Checks (same criteria as v1.0):
+
+| check | result |
+|---|---|
+| GT object pose used to choose actions | **Pass.** Handoff uses `_servo_err_raw`; the semantic channel is vision-derived; the servo uses `_servo_err`/`_disk_centre`/FK/gripper width. Simulator `done` is ignored in transport. |
+| Retry/reset of failed episodes | **Pass.** Every episode increments `ep_done`; no retry. |
+| Q-filter / best-of-N | **Pass.** No Q-filter; transport uses the **mean** of 5 samples, not best-of-N. Insert N=1. |
+| Fallback/rescue inflating SR | **Pass.** `FALLBACK_CKPT=""`; the sem7 log has only `handoff_vision`, no correction/fallback. |
+| Success predicate trivially true | **Pass.** `_is_seated` requires upright, at rest, target peg, correct support height, low velocity. GT is evaluation-only. |
+| Seed cherry-picking | **Not proven.** Live seeds 896250+; 16-episode sample. |
+| Frozen n=200 protocol | **No.** Live 16/16; Wilson 95% CI ~80.6–100%. |
+
+Live result at capture: **16/16 = 100%**, all `handoff_vision`, levels 0:8,
+1:6, 2:2, mean 57.1 steps. Raw log:
+`results/webserver_8786_sem7_session.log`.
+
+Caveats: still a **hybrid controller** (learned policies + vision servos/
+interlocks + 5x transport averaging); single-move task, not full multi-move
+Hanoi; small live sample; per-episode simulator resets; the semantic channel
+is an engineered observation and must be reproducible on the real camera.
+
+Recommended before trusting v1.1: `SLOW=1` A/B (static cache off),
+`POLICY_ONLY=1` ablation (N=1, servos/interlocks off), n>=200 on a fresh seed
+base, and a seed-disjointness check against the transport/insert training
+data.
+
+**Verdict:** no evidence of GT leakage, retry, Q-filter, or fallback in the
+v1.1 action path. The 16/16 is honest for the live session, but it is a
+hybrid/live-sample result, not a pure-model/frozen-holdout 1.0.
+
+---
+
+## v1.0 audit — three-transport version (2026-11-13)
+
+Audited live at `http://127.0.0.1:8786/`. The server was
 `hanoi_vservo_2026/scripts/realtime_general_newcam.py`, cwd
 `hanoi_vservo_2026`, seed loop 896250+, `max_steps=260`.
 

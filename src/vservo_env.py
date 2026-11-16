@@ -35,6 +35,13 @@ from vision_pose import (
 
 GHOST_G = 64
 GHOST_RGB = np.array([255.0, 0.0, 255.0], dtype=np.float32)  # magenta
+# canonical XML colours (0-255) of the three disks, used by the optional
+# object-to-manipulate point-cloud channel
+DISK_COLORS = {
+    "disk_l": np.array([0.90, 0.12, 0.12], dtype=np.float32) * 255.0,
+    "disk_m": np.array([0.12, 0.72, 0.22], dtype=np.float32) * 255.0,
+    "disk_s": np.array([0.18, 0.32, 0.95], dtype=np.float32) * 255.0,
+}
 # FAST: the post and the table are static in this fixture.  Estimate them
 # only during a short warm-up (or while missing) and reuse the cached
 # geometry; the moving-disk estimate still runs every vision frame.
@@ -94,7 +101,17 @@ class VservoEnv(HanoiEnv):
         self.static_cache = os.environ.get("VSERVO_STATIC_CACHE", "0") == "1"
         self.vision_skip = os.environ.get("VSERVO_VISION_SKIP", "0") == "1"
         self._obs_cache = None
-        self.pc_channels = 7  # xyz + rgb + ghost flag
+        # Optional semantic class channel: 0 = other, 1 = virtual goal
+        # (ghost), 2 = object to manipulate (moving disk).  Computed from the
+        # vision-estimated disk pose and the task disk colour, i.e. no
+        # simulator ground truth at runtime.  Keeps the cloud at 7 channels.
+        self.semantic_channel = (
+            os.environ.get("VSERVO_SEMANTIC_CHANNEL", "0") == "1")
+        # Optional separate 8th channel marking the object to manipulate.
+        self.object_channel = (
+            os.environ.get("VSERVO_OBJECT_CHANNEL", "0") == "1")
+        self.pc_channels = 8 if (self.object_channel
+                                 and not self.semantic_channel) else 7
         self._vision_rng = np.random.default_rng(7)
         self._ghost_local = sample_disk_model(
             self.vision_disk, n=GHOST_G, rng=self._vision_rng)
@@ -235,10 +252,42 @@ class VservoEnv(HanoiEnv):
         ghost = self._ghost_points()
         out = np.zeros((self.n_points, self.pc_channels), dtype=np.float32)
         out[:n_real, :6] = real
+        if self.semantic_channel:
+            out[:n_real, 6] = 2.0 * self._object_mask(
+                real[:, :3], real[:, 3:6])
+        elif self.object_channel:
+            out[:n_real, 7] = self._object_mask(real[:, :3], real[:, 3:6])
         out[n_real:, :3] = ghost
         out[n_real:, 3:6] = GHOST_RGB
         out[n_real:, 6] = 1.0
         return out
+
+    def _object_mask(self, xyz: np.ndarray, rgb: np.ndarray) -> np.ndarray:
+        """Binary mask of the visible points of the moving disk.
+
+        Uses the vision-estimated disk centre and normal plus the task disk's
+        canonical XML colour.  The other objects (robot, table, pegs) are grey
+        or yellow and are rejected by the colour gate, so the mask stays on
+        the moving ring even when a peg passes through its hole.
+        """
+        if self._disk_centre is None or self._disk_normal is None:
+            return np.zeros(len(xyz), dtype=np.float32)
+        c = np.asarray(self._disk_centre, dtype=np.float64)
+        n = np.asarray(self._disk_normal, dtype=np.float64)
+        nn = float(np.linalg.norm(n))
+        if nn < 1e-9:
+            return np.zeros(len(xyz), dtype=np.float32)
+        n = n / nn
+        d = np.asarray(xyz, dtype=np.float64) - c[None]
+        dz = d @ n
+        radial = np.linalg.norm(d - dz[:, None] * n[None], axis=1)
+        canon = DISK_COLORS[self.vision_disk]
+        rgb_arr = np.asarray(rgb, dtype=np.float64)
+        col = np.linalg.norm(rgb_arr - canon[None], axis=1)
+        bright = rgb_arr.max(axis=1)
+        m = ((np.abs(dz) < 0.012) & (radial < 0.046) & (col < 130.0)
+             & (bright > 150.0))
+        return m.astype(np.float32)
 
     def _ghost_points(self) -> np.ndarray:
         if self._ghost_centre is None:

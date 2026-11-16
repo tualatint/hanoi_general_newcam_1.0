@@ -42,24 +42,18 @@ install_transport_servo(GeneralVservoEnv)
 
 app = Flask(__name__)
 
-TRANSPORT_CKPT = ""
+TRANSPORT_CKPT = os.environ.get(
+    "TRANSPORT_CKPT",
+    os.path.join(ROOT, "runs", "bc_vservo_transport_gen_v2_uni_sem7",
+                 "best.ckpt"))
 INSERT_CKPT = os.environ.get(
     "INSERT_CKPT",
     os.path.join(ROOT, "runs", "bc_vservo_insert_v2b", "best.ckpt"))
 # Per-destination specialists (selected by the task's destination peg).
 FALLBACK_CKPT = ""
-P0_TRANSPORT_CKPT = os.environ.get(
-    "P0_CKPT",
-    os.path.join(ROOT, "runs", "bc_vservo_transport_bal_v2_p0",
-                 "best.ckpt"))
-P1_TRANSPORT_CKPT = os.environ.get(
-    "P1_CKPT",
-    os.path.join(ROOT, "runs", "bc_vservo_transport_bal_v2_p1",
-                 "best.ckpt"))
-P2_TRANSPORT_CKPT = os.environ.get(
-    "P2_CKPT",
-    os.path.join(ROOT, "runs", "bc_vservo_transport_bal_v2_p2",
-                 "best.ckpt"))
+P0_TRANSPORT_CKPT = os.environ.get("P0_CKPT", "")
+P1_TRANSPORT_CKPT = os.environ.get("P1_CKPT", "")
+P2_TRANSPORT_CKPT = os.environ.get("P2_CKPT", "")
 
 TRANSPORT_STEPS = 120
 INSERT_STEPS = 120
@@ -100,6 +94,29 @@ def _snapshot():
         return dict(_status)
 
 
+_policy_meta = {}
+
+
+def _pc_channels(cfg):
+    try:
+        pc = cfg["task"]["shape_meta"]["obs"]["point_cloud"]
+        if isinstance(pc, dict):
+            pc = pc.get("shape", pc)
+        return int(pc[1])
+    except Exception:
+        return None
+
+
+def _policy_semantic(cfg):
+    try:
+        zp = cfg.get("dataset", {}).get("zarr_path", "")
+        if isinstance(zp, (list, tuple)):
+            return any("_sem7" in str(x) for x in zp)
+        return "_sem7" in str(zp)
+    except Exception:
+        return False
+
+
 def _load_policy(path):
     path = os.path.abspath(path)
     if path in _policies:
@@ -107,7 +124,10 @@ def _load_policy(path):
     policy, cfg = build_policy_from_ckpt(path, _device, use_ema=True)
     policy.eval()
     _policies[path] = (policy, cfg)
-    print(f"[server] loaded {path}", flush=True)
+    _policy_meta[id(policy)] = (_pc_channels(cfg), _policy_semantic(cfg))
+    print(f"[server] loaded {path} "
+          f"(pc_ch={_policy_meta[id(policy)][0]}, "
+          f"sem={_policy_meta[id(policy)][1]})", flush=True)
     return policy
 
 
@@ -172,6 +192,12 @@ def _policy_act(policy, obs_hist, n=None):
         "agent_pos": np.stack([o["agent_pos"] for o in obs_hist])[None],
         "point_cloud": np.stack([o["point_cloud"] for o in obs_hist])[None],
     }
+    n_ch, sem = _policy_meta.get(id(policy), (None, True))
+    if n_ch is not None:
+        stack["point_cloud"] = stack["point_cloud"][..., :int(n_ch)]
+    if (not sem) and stack["point_cloud"].shape[-1] > 6:
+        pc = stack["point_cloud"]
+        pc[..., 6] = (np.abs(pc[..., 6] - 1.0) < 0.5).astype(pc.dtype)
     od = dict_apply(stack, lambda x: torch.from_numpy(x).to(
         device=_device).float())
     if n is None:
@@ -203,7 +229,7 @@ def _rollout_worker(seed, max_steps, video_size, loop, stop_event):
                 success=None, last_result=None, last_steps=None,
                 stage="-", handoff=None, switch=None, fallback=False,
                 task=None, message="loading policies", ckpt=INSERT_CKPT)
-        pol_t = _load_policy(TRANSPORT_CKPT) if TRANSPORT_CKPT else None
+        pol_t = _load_policy(TRANSPORT_CKPT)
         pol_i = _load_policy(INSERT_CKPT)
         pol_fb = _load_policy(FALLBACK_CKPT) if FALLBACK_CKPT else None
         pol_t2 = _load_policy(P2_TRANSPORT_CKPT) if P2_TRANSPORT_CKPT else None
@@ -216,7 +242,7 @@ def _rollout_worker(seed, max_steps, video_size, loop, stop_event):
             spec_t[1] = pol_t1
         if pol_t2 is not None:
             spec_t[2] = pol_t2
-        n_obs = int((pol_t or pol_i).n_obs_steps)
+        n_obs = int(pol_t.n_obs_steps)
 
         env = GeneralVservoEnv(
             max_episode_steps=int(max_steps), n_points=1024,

@@ -95,6 +95,9 @@ def install(env_cls) -> None:
         self._closed_once = False
         self._settle_left = 0
         self._center_wait = 0
+        self._wedge_stall = 0
+        self._wedge_prev = None
+        self._wedge_rel = 0
         return orig_reset(self, *args, **kwargs)
 
     def _step(self, action):
@@ -332,6 +335,40 @@ def install(env_cls) -> None:
             else:
                 self._ins_stall = 0
                 self._ins_ez_prev = None
+        # Wedge release: a ring grasped with a few degrees of tilt can jam on
+        # the post cylinder above the seat (observed: 8 deg at handoff, ring
+        # held 38 mm above the seat for the whole 120-step budget).  Opening
+        # the jaws while lifting from that state lets the ring drop and
+        # self-level on the post; it seats within ~5 steps.  Only trigger
+        # when the ring is centred, the descent has stalled, and the ring is
+        # around the post (8-45 mm above the seat), never while it is still
+        # above the post cap.  Vision + proprioception only.
+        if (os.environ.get("INSERT_WEDGE_RELEASE", "1") != "0"
+                and getattr(self, "skill_stage", "") == "insert"
+                and float(getattr(self, "_servo_valid", 0.0)) > 0.0):
+            e = np.asarray(self._servo_err, dtype=np.float64)
+            w = float(self._get_gripper_width())
+            rxy = float(np.hypot(e[0], e[1]))
+            ez = float(e[2])
+            if (w > 0.030 and rxy < 0.0020
+                    and 0.008 < -ez < 0.045):
+                prev = getattr(self, "_wedge_prev", None)
+                if prev is not None and abs(ez - prev) < 0.0005:
+                    self._wedge_stall = int(getattr(
+                        self, "_wedge_stall", 0)) + 1
+                else:
+                    self._wedge_stall = 0
+                self._wedge_prev = ez
+                if self._wedge_stall >= 6:
+                    self._wedge_rel = 1
+            else:
+                self._wedge_stall = 0
+                self._wedge_prev = None
+            if getattr(self, "_wedge_rel", 0):
+                a[3] = -1.0
+                a[2] = 0.05
+                if w > 0.082:
+                    self._wedge_rel = 0
         return orig_step(self, a.astype(np.float32))
 
     env_cls.step = _step

@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
-# Download the four checkpoints from the v1.0 GitHub Release (release assets,
+# Download the two v1.1 checkpoints from the GitHub Release (release assets,
 # not Git LFS).  Verifies against CHECKSUMS.sha256.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 REPO="tualatint/hanoi_general_newcam_1.0"
-TAG="v1.0"
+TAG="v1.1"
 
 declare -A ASSETS=(
+  [bc_vservo_transport_gen_v2_uni_sem7.ckpt]="runs/bc_vservo_transport_gen_v2_uni_sem7/best.ckpt"
   [bc_vservo_insert_v2b.ckpt]="runs/bc_vservo_insert_v2b/best.ckpt"
-  [bc_vservo_transport_bal_v2_p0.ckpt]="runs/bc_vservo_transport_bal_v2_p0/best.ckpt"
-  [bc_vservo_transport_bal_v2_p1.ckpt]="runs/bc_vservo_transport_bal_v2_p1/best.ckpt"
-  [bc_vservo_transport_bal_v2_p2.ckpt]="runs/bc_vservo_transport_bal_v2_p2/best.ckpt"
 )
 
 verify() {
@@ -46,4 +44,4 @@ for name in "${!ASSETS[@]}"; do
 done
 
 sha256sum -c CHECKSUMS.sha256
-echo "[download_weights] all four checkpoints verified"
+echo "[download_weights] both checkpoints verified"
