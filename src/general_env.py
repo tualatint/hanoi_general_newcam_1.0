@@ -23,7 +23,7 @@ import numpy as np
 from hanoi_env import (  # noqa: F401
     DISK_HALF_T, DISK_NAMES, PEG_XY, TABLE_Z, HanoiEnv)
 from vservo_env import GHOST_G, VservoEnv
-from vision_pose import sample_disk_model
+from vision_pose import DISK_OUTER_R, sample_disk_model
 
 # Matches expert_hanoi.PEG_TOP_Z (TABLE_Z + 0.060): the expert clamps the
 # pre-insert height just above the post cap for every target level.
@@ -41,6 +41,118 @@ class GeneralVservoEnv(VservoEnv):
         if pose_path:
             from camera_pose import apply_camera_pose
             apply_camera_pose(self, pose_path)
+        # Per-episode Gaussian peg placement: each post is offset
+        # independently in x/y around its nominal fixture position.  The
+        # nominal array is the prior used by the vision search; the physical
+        # pegs move (model body positions) and the shared PEG_XY array is
+        # updated in place so the disk placement, expert and success
+        # predicates all use the actual positions.
+        self._peg_nominal = np.array(PEG_XY, dtype=np.float64, copy=True)
+        self._peg_jitter = float(
+            os.environ.get("HANOI_PEG_JITTER_MM", "0")) * 1e-3
+        self._peg_search_radius = float(os.environ.get(
+            "HANOI_PEG_SEARCH_MM",
+            "50" if self._peg_jitter > 0 else "25")) * 1e-3
+        self._peg_body_ids = [
+            self.model.body(f"peg{i}").id for i in range(3)]
+
+    def _randomize_pegs(self):
+        if self._peg_jitter <= 0.0:
+            return
+        # Optional rejection of layouts where two posts come closer than
+        # ``HANOI_PEG_MIN_DIST_MM`` (default 0 = no rejection): large sigma
+        # otherwise lets adjacent rings touch/overlap on the table.
+        min_d = float(os.environ.get("HANOI_PEG_MIN_DIST_MM", "0")) * 1e-3
+        off = None
+        for _ in range(64):
+            off = self.np_random.normal(
+                0.0, self._peg_jitter, size=self._peg_nominal.shape)
+            if min_d <= 0.0:
+                break
+            pos = self._peg_nominal + off
+            d = min(float(np.linalg.norm(pos[0] - pos[1])),
+                    float(np.linalg.norm(pos[1] - pos[2])),
+                    float(np.linalg.norm(pos[0] - pos[2])))
+            if d >= min_d:
+                break
+        self.set_peg_offsets(off)
+
+    def set_peg_offsets(self, off):
+        """Apply explicit x/y peg offsets (metres), e.g. from a template."""
+        off = np.asarray(off, dtype=np.float64).reshape(3, 2)
+        pos = self._peg_nominal + off
+        PEG_XY[:] = pos
+        for i, bid in enumerate(self._peg_body_ids):
+            self.model.body_pos[bid] = [pos[i, 0], pos[i, 1], TABLE_Z]
+        mujoco.mj_forward(self.model, self.data)
+        self._peg_offsets = off.copy()
+
+    def _peg_layout_collides(self):
+        """True if the sampled peg offsets clash with the disk arrangement.
+
+        Checks the two physical exclusion rules of the fixture:
+        * a post may not sit inside another disk's footprint
+          (distance < disk outer radius + post radius), and
+        * two rings on different posts may not overlap
+          (distance < r_i + r_j).
+        """
+        st = getattr(self, "_initial_state", None)
+        if st is None:
+            return False
+        pos = np.asarray(PEG_XY, dtype=np.float64)
+        margin = float(os.environ.get(
+            "HANOI_PEG_COLLISION_MARGIN_MM", "5")) * 1e-3
+        peg_r = 0.007
+        names = DISK_NAMES
+        for d, nm in enumerate(names):
+            p = int(st[d])
+            for q in range(3):
+                if q == p:
+                    continue
+                if (float(np.linalg.norm(pos[p] - pos[q]))
+                        < DISK_OUTER_R[nm] + peg_r + margin):
+                    return True
+        for d1 in range(3):
+            for d2 in range(d1 + 1, 3):
+                p1, p2 = int(st[d1]), int(st[d2])
+                if p1 == p2:
+                    continue
+                if (float(np.linalg.norm(pos[p1] - pos[p2]))
+                        < DISK_OUTER_R[names[d1]]
+                        + DISK_OUTER_R[names[d2]] + margin):
+                    return True
+        # Open-jaw clearance: while approaching a ring the pads sit at
+        # +-GRIPPER_HALF from the grasp centre, so no other post/disk may be
+        # inside that envelope either.
+        grip_half = float(os.environ.get(
+            "HANOI_GRIPPER_HALF_MM", "48")) * 1e-3
+        for p in range(3):
+            for q in range(3):
+                if q == p:
+                    continue
+                radii = [DISK_OUTER_R[names[d]] for d in range(3)
+                         if int(st[d]) == q]
+                rq = max(radii) if radii else peg_r
+                if (float(np.linalg.norm(pos[p] - pos[q]))
+                        < grip_half + rq + margin):
+                    return True
+        return False
+
+    def reset(self, *args, **kwargs):
+        # Sample peg offsets freely, then reject layouts whose rings/posts
+        # would physically clash (the arrangement is sampled inside the base
+        # reset, so the check runs after it).
+        tries = int(os.environ.get("HANOI_PEG_TRIES", "12")) \
+            if self._peg_jitter > 0 else 1
+        obs = None
+        for _ in range(max(1, tries)):
+            self._randomize_pegs()
+            obs = super().reset(*args, **kwargs)
+            if not self._peg_layout_collides():
+                self._peg_rejects = 0
+                break
+            self._peg_rejects = int(getattr(self, "_peg_rejects", 0)) + 1
+        return obs
 
     # ------------------------------------------------------------------
     # random task / initial arrangement

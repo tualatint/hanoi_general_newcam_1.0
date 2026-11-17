@@ -1,55 +1,57 @@
-# hanoi_general_newcam_1.0 — v1.1 single-transport
+# hanoi_general_newcam_1.0 — v1.2 single-transport
 
-Clean copy of the audited general new-camera Hanoi stack, updated to
-**one transport model** instead of three destination specialists.
+Clean copy of the running general new-camera Hanoi stack, updated to
+**one transport model** plus the new jitter/slip interlocks.
 
-## v1.1 changes
+## v1.2 changes
 
-- **One transport policy** `runs/bc_vservo_transport_gen_v2_uni_sem7/best.ckpt`
-  replaces the `P0/P1/P2` per-destination specialists.
+- **One transport policy**
+  `runs/bc_vservo_transport_sem7_sgd180/best.ckpt` (replaces the
+  `P0/P1/P2` per-destination specialists).
 - **Semantic point-cloud channel** (7th channel): `0 = other`,
-  `1 = virtual goal`, `2 = object to manipulate`. It is computed from the
+  `1 = virtual goal`, `2 = object to manipulate`; computed from the
   vision-estimated disk pose/normal and the task disk colour — no simulator
   ground truth. `VSERVO_SEMANTIC_CHANNEL=1`.
-- The insert policy is the same `bc_vservo_insert_v2b` (non-semantic); the
-  server detects the checkpoint type and binarises the 7th channel for it.
-- New insert **wedge-release** interlock and a wider grasp-height gate
-  (`TRANSPORT_GRASP_GATE=1`, `[-15 mm, +25 mm]`).
-- The running 8786 server uses `N_SAMPLES=5` transport action averaging,
-  `INSERT_SAMPLES=1`, `VSERVO_VISION_SKIP=0`, `VSERVO_STATIC_CACHE=1`.
+- **New transport interlocks** (vision/proprio only):
+  `TRANSPORT_GRASP_ALIGN=1`, `TRANSPORT_GRASP_ASSIST=1`,
+  `TRANSPORT_GRASP_COMMIT=1`, `TRANSPORT_LIFT_STALL=1`,
+  `TRANSPORT_SLIP_RESET=1`.
+- Insert is the same `bc_vservo_insert_v2b` (non-semantic); the server
+  detects the checkpoint type and binarises channel 6 for it.
+- Store release: v1.0 (three transports), v1.1 (`gen_v2_uni_sem7`), v1.2
+  (current `sem7_sgd180` + jitter/slip interlocks).
 
 ## Live result at capture
 
-- **16/16 = 100%** live, all `switch=handoff_vision`;
-  levels 0:8, 1:6, 2:2; disks s:12, m:4; mean 57.1 steps.
-- Wilson 95% CI ~80.6–100% (live sample; not a frozen n=200 holdout).
-- Raw log: `results/webserver_8786_sem7_session.log`;
-  summary: `results/sem7_summary.json`.
+- **120/120 = 100%** live, all `switch=handoff_vision`;
+  levels 0:48, 1:47, 2:25; disks s:70, m:29, l:21; mean 57.0 steps.
+- Wilson 95% CI ~96.9–100%.
+- Raw log: `results/webserver_8786_jitter_session.log`;
+  summary: `results/jitter_summary.json`.
 
 ## Stack
 
-- Transport: single `gen_v2_uni_sem7` policy.
+- Transport: single `sem7_sgd180` policy.
 - Insert: `bc_vservo_insert_v2b`.
 - Vision-only residual servos/interlocks (`transport_residual_servo.py`):
   terminal transport servo, insert terminal servo, grasp-height gate,
-  lift gate, carry-high rule, force-close, wedge release.
+  grasp align/assist/commit, lift gate, lift-stall reset, slip reset,
+  carry-high rule, force-close, wedge release.
 - 18-D vision observation + 1024x7 point cloud (semantic channel or binary
   ghost flag depending on the checkpoint).
 - Camera pose: `results/camera_pose_latest.json`; OSMesa headless rendering.
 - No fallback/rescue: `FALLBACK_CKPT=""`.
 
-See `AUDIT.md`. The **v1.0 release** remains the three-transport version
-(P0/P1/P2 + insert v2b).
-
 ## Weights
 
 | file | size |
 |---|---:|
-| `runs/bc_vservo_transport_gen_v2_uni_sem7/best.ckpt` | 621 MB |
+| `runs/bc_vservo_transport_sem7_sgd180/best.ckpt` | 621 MB |
 | `runs/bc_vservo_insert_v2b/best.ckpt` | 621 MB |
 
-Attached to the **v1.1 GitHub Release**; fetch with `./download_weights.sh`.
+Attached to the **v1.2 GitHub Release**; fetch with `./download_weights.sh`.
 SHA-256s are in `CHECKSUMS.sha256` / `WEIGHTS.md`.
+The v1.0 and v1.1 releases remain available.
 
 ## Setup
 
@@ -89,14 +91,14 @@ PORT=8790 SEED=900000 ./run_server.sh
 
 - Task: single-move random disk -> random peg at level 0/1/2, no full Hanoi
   size rule. Not the full multi-move chain.
-- The result is a hybrid controller: learned policies + hand-coded vision
-  servos/interlocks + 5x transport action averaging. It is not a pure-model
-  result.
-- Live session, not a frozen n=200 holdout; per-episode simulator resets.
+- Hybrid controller: learned policies + hand-coded vision servos/interlocks
+  + 5x transport action averaging. Not a pure-model result.
+- Live session (120 episodes), not a frozen n=200 holdout; per-episode
+  simulator resets.
 - Task destination/level condition the ghost target and policy; legitimate
   for a task-conditioned controller, not target inference.
-- The semantic channel is vision-derived, but it is still an engineered
-  observation channel; it must be reproducible on the real camera.
+- The semantic channel is vision-derived but still an engineered observation;
+  it must be reproducible on the real camera.
 
 ## License
 

@@ -5,10 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 REPO="tualatint/hanoi_general_newcam_1.0"
-TAG="v1.1"
+TAG="v1.2"
 
 declare -A ASSETS=(
-  [bc_vservo_transport_gen_v2_uni_sem7.ckpt]="runs/bc_vservo_transport_gen_v2_uni_sem7/best.ckpt"
+  [bc_vservo_transport_sem7_sgd180.ckpt]="runs/bc_vservo_transport_sem7_sgd180/best.ckpt"
   [bc_vservo_insert_v2b.ckpt]="runs/bc_vservo_insert_v2b/best.ckpt"
 )
 

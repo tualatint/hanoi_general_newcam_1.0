@@ -1,5 +1,51 @@
 # Audit — 8786 general newcam chain
 
+## v1.2 update — `sem7_sgd180` + jitter/slip interlocks (audited 2026-11-17)
+
+The running 8786 server now uses one transport checkpoint
+`runs/bc_vservo_transport_sem7_sgd180/best.ckpt` (semantic channel), the same
+insert `bc_vservo_insert_v2b`, and five new transport/insert interlocks:
+
+- `TRANSPORT_GRASP_ASSIST=1` (grasp assist)
+- `TRANSPORT_GRASP_ALIGN=1` (close only when aligned)
+- `TRANSPORT_GRASP_COMMIT=1` (commit the grasp closure)
+- `TRANSPORT_LIFT_STALL=1` (lift-stall detection/reset)
+- `TRANSPORT_SLIP_RESET=1` (slip reset)
+
+These use the vision error/disk estimate, FK, and gripper width; the
+`transport_residual_servo.py` module remains vision-only by construction.
+
+Checks:
+
+| check | result |
+|---|---|
+| GT object pose used to choose actions | **Pass.** Handoff uses `_servo_err_raw`; semantic channel and all interlocks are vision/FK-derived; simulator `done` is ignored in transport. |
+| Retry/reset of failed episodes | **Pass.** Every episode increments `ep_done`; no episode retry. `TRANSPORT_SLIP_RESET` resets controller state, not the episode. |
+| Q-filter / best-of-N | **Pass.** No Q-filter; transport uses the **mean** of 5 samples. Insert N=1. |
+| Fallback/rescue inflating SR | **Pass.** `FALLBACK_CKPT=""`; all 120 logged episodes are `handoff_vision`, no correction/fallback. |
+| Success predicate trivially true | **Pass.** `_is_seated` requires upright, at rest, target peg, correct support height, low velocity; GT is evaluation-only. |
+| Seed cherry-picking | **Not proven.** Live seeds 896250+; 120-episode continuous loop. |
+| Frozen n=200 protocol | **No.** Live 120/120; Wilson 95% CI ~96.9–100%. |
+
+Live result at capture: **120/120 = 100%**, all `handoff_vision`, levels
+0:48, 1:47, 2:25; disks s:70, m:29, l:21; mean 57.0 steps. Raw log:
+`results/webserver_8786_jitter_session.log`.
+
+Caveats: hybrid controller (learned policies + vision servos/interlocks +
+5x transport averaging); single-move task, not full multi-move Hanoi; live
+sample, not frozen n=200; per-episode simulator resets; task destination/level
+condition the target; semantic channel is an engineered observation.
+
+Recommended before trusting v1.2: `SLOW=1` A/B, `POLICY_ONLY=1` ablation,
+n>=200 on a fresh seed base, and a seed-disjointness check against the
+transport/insert training data.
+
+**Verdict:** no evidence of GT leakage, retry, Q-filter, or fallback in the
+v1.2 action path. The 120/120 is honest for the live session, but it is a
+hybrid/live result, not a pure-model/frozen-holdout 1.0.
+
+---
+
 ## v1.1 update — single transport (audited 2026-11-16)
 
 The running 8786 server was updated from three destination specialists

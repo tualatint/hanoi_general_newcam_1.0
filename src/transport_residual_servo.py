@@ -32,6 +32,50 @@ SERVO_K = float(os.environ.get("TRANSPORT_SERVO_K", "0.05"))
 SERVO_GATE = float(os.environ.get("TRANSPORT_SERVO_GATE", "0.020"))  # m xy
 SERVO_Z_GATE = float(os.environ.get("TRANSPORT_SERVO_Z_GATE", "0.008"))
 SERVO_CLIP = float(os.environ.get("TRANSPORT_SERVO_CLIP", "0.20"))
+# Grasp approach assist (opt-in, vision + proprioception only).  Some
+# jittered scenes make the policy hover above the source ring with the jaws
+# open (it never commits to the grasp); after GA_STEPS aligned hover steps
+# this drives the jaws down to the expert grasp pose and closes them.
+GRASP_ASSIST = os.environ.get("TRANSPORT_GRASP_ASSIST", "0") != "0"
+GA_XY = float(os.environ.get("TRANSPORT_GRASP_ASSIST_XY_MM", "0.020"))
+GA_REL = float(os.environ.get("TRANSPORT_GRASP_ASSIST_REL_MM", "0.010"))
+GA_STEPS = int(os.environ.get("TRANSPORT_GRASP_ASSIST_STEPS", "30"))
+GA_AZ = float(os.environ.get("TRANSPORT_GRASP_ASSIST_AZ", "-0.12"))
+GA_PAD_Z = float(os.environ.get("TRANSPORT_FINGER_TO_PAD_Z", "0.0147564"))
+GA_DISK_HALF_T = 0.010
+# Grip-force cap: once the jaws contact a ring, keep closing commands from
+# squeezing it out (the pads are flat and a ring pinched above its mid-plane
+# is ejected downward).  Holds the current opening via the position target.
+GRIP_HOLD = os.environ.get("TRANSPORT_GRIP_HOLD", "0") != "0"
+GRIP_HOLD_OPEN = float(os.environ.get("TRANSPORT_GRIPPER_OPEN", "0.044"))
+# Slip reset: after a confirmed grasp, if the jaw width collapses below the
+# ring diameter the ring is no longer held.  Release the closure latch so
+# the grasp assist can re-approach and close again (vision + proprioception).
+SLIP_RESET = os.environ.get("TRANSPORT_SLIP_RESET", "0") != "0"
+# Grasp commit: at the expert grasp pose, force the jaws closed instead of
+# letting the policy re-open without the ring (observed: jaws stop at 64 mm
+# on a 52 mm ring, then the policy lifts empty-handed).
+GRASP_COMMIT = os.environ.get("TRANSPORT_GRASP_COMMIT", "0") != "0"
+# Pre-grasp alignment servo: while the jaws are open, servo the finger site
+# to the expert grasp pose (disk centre + FINGER_TO_PAD_Z in x) and veto a
+# closure that happens more than GRASP_ALIGN_MM off-centre.  Off-centre
+# grasps tilt the ring against the 0.67 mm-clearance post and it binds
+# during the lift (the residual sigma=12 failure).
+GRASP_ALIGN = os.environ.get("TRANSPORT_GRASP_ALIGN", "0") != "0"
+GRASP_ALIGN_MM = float(os.environ.get(
+    "TRANSPORT_GRASP_ALIGN_MM", "0.006"))
+# Lift-stall reset: a slightly tilted small ring can bind on the 60 mm post
+# while held; if the vision disk z does not rise while the servo still asks
+# for a large lift (ez > 20 mm), open, back off and re-grasp once.
+LIFT_STALL = os.environ.get("TRANSPORT_LIFT_STALL", "0") != "0"
+LS_STEPS = int(os.environ.get("TRANSPORT_LIFT_STALL_STEPS", "12"))
+LS_DZ = float(os.environ.get("TRANSPORT_LIFT_STALL_DZ_MM", "0.002"))
+RING_OD = {"disk_l": 0.076, "disk_m": 0.064, "disk_s": 0.052}
+
+
+def _ring_od(env) -> float:
+    """Outer diameter of the ring currently being moved (vision task)."""
+    return RING_OD.get(getattr(env, "vision_disk", ""), 0.076)
 INSERT_S = np.array([
     float(x) for x in
     os.environ.get("INSERT_SERVO_S", "0.065,0.065,0.065").split(",")
@@ -98,6 +142,11 @@ def install(env_cls) -> None:
         self._wedge_stall = 0
         self._wedge_prev = None
         self._wedge_rel = 0
+        self._ga_hover = 0
+        self._ga_engaged = False
+        self._ls_z = None
+        self._ls_count = 0
+        self._ls_used = 0
         return orig_reset(self, *args, **kwargs)
 
     def _step(self, action):
@@ -132,7 +181,7 @@ def install(env_cls) -> None:
                 and getattr(self, "skill_stage", "") == "transport"
                 and float(getattr(self, "_servo_valid", 0.0)) > 0.0
                 and e_raw0 is not None
-                and 0.030 < float(self._get_gripper_width()) < 0.082):
+                and 0.030 < float(self._get_gripper_width()) < _ring_od(self) + 0.004):
             # raw (not smoothed) error: the EMA lags and lets a stale large
             # z error saturate the correction
             e = np.asarray(e_raw0, dtype=np.float64)
@@ -154,7 +203,7 @@ def install(env_cls) -> None:
                 and getattr(self, "skill_stage", "") == "transport"
                 and float(getattr(self, "_servo_valid", 0.0)) > 0.0
                 and e_raw0 is not None
-                and 0.030 < float(self._get_gripper_width()) < 0.082):
+                and 0.030 < float(self._get_gripper_width()) < _ring_od(self) + 0.004):
             e = np.asarray(e_raw0, dtype=np.float64)
             gate_xy = float(os.environ.get(
                 "TRANSPORT_TERMINAL_GATE", "0.080"))
@@ -191,12 +240,89 @@ def install(env_cls) -> None:
                 a[2] = min(float(a[2]), -0.05)
             elif float(a[3]) > 0.0:
                 a[2] = 0.0
+        # Grasp approach assist: if the open jaws stay aligned over the
+        # vision-estimated source ring but the policy keeps hovering without
+        # committing, drive the expert grasp pose (site = disk centre +
+        # FINGER_TO_PAD_Z in x, disk top + 1.5 mm) and close there.
+        if (GRASP_ASSIST
+                and getattr(self, "skill_stage", "") == "transport"
+                and float(getattr(self, "_servo_valid", 0.0)) > 0.0
+                and not getattr(self, "_grasp_closed", False)
+                and getattr(self, "_disk_centre", None) is not None
+                and self._finger_site_id is not None):
+            site = self.data.site(self._finger_site_id).xpos
+            dc = np.asarray(self._disk_centre, dtype=np.float64)
+            gx = float(dc[0]) + GA_PAD_Z
+            gy = float(dc[1])
+            gz = float(dc[2]) + GA_DISK_HALF_T + 0.0015
+            dxy = float(np.hypot(site[0] - gx, site[1] - gy))
+            rel = float(site[2] - gz)
+            w = float(self._get_gripper_width())
+            if dxy < GA_XY and rel > GA_REL and w > _ring_od(self) + 0.004:
+                self._ga_hover = int(getattr(self, "_ga_hover", 0)) + 1
+            elif rel <= GA_REL:
+                self._ga_hover = 0
+            if self._ga_hover >= GA_STEPS:
+                self._ga_engaged = True
+            if getattr(self, "_ga_engaged", False):
+                a[0] = float(np.clip(0.5 * (gx - site[0]) / 0.065,
+                                     -0.20, 0.20))
+                a[1] = float(np.clip(0.5 * (gy - site[1]) / 0.065,
+                                     -0.20, 0.20))
+                a[3] = -1.0
+                a[2] = GA_AZ
+                if rel <= 0.006:
+                    a[3] = 1.0
+                    a[2] = 0.0
+                if w < _ring_od(self) + 0.004:
+                    self._ga_engaged = False
+                    self._ga_hover = 0
+        if (GRASP_ALIGN
+                and getattr(self, "skill_stage", "") == "transport"
+                and float(getattr(self, "_servo_valid", 0.0)) > 0.0
+                and not getattr(self, "_grasp_closed", False)
+                and getattr(self, "_disk_centre", None) is not None
+                and self._finger_site_id is not None):
+            site3 = self.data.site(self._finger_site_id).xpos
+            dc3 = np.asarray(self._disk_centre, dtype=np.float64)
+            gx3 = float(dc3[0]) + GA_PAD_Z
+            gy3 = float(dc3[1])
+            dxy3 = float(np.hypot(site3[0] - gx3, site3[1] - gy3))
+            w3 = float(self._get_gripper_width())
+            if w3 > _ring_od(self) + 0.004 and GRASP_ALIGN_MM < dxy3 < 0.030:
+                a[0] = float(np.clip(0.5 * (gx3 - site3[0]) / 0.065,
+                                     -0.25, 0.25))
+                a[1] = float(np.clip(0.5 * (gy3 - site3[1]) / 0.065,
+                                     -0.25, 0.25))
+                if float(a[3]) > 0.0:
+                    a[3] = -1.0
+                if float(site3[2] - (dc3[2] + GA_DISK_HALF_T + 0.0015)) > 0.010:
+                    a[2] = min(float(a[2]), -0.05)
+        if (GRASP_COMMIT
+                and getattr(self, "skill_stage", "") == "transport"
+                and float(getattr(self, "_servo_valid", 0.0)) > 0.0
+                and not getattr(self, "_grasp_closed", False)
+                and getattr(self, "_disk_centre", None) is not None
+                and self._finger_site_id is not None):
+            site2 = self.data.site(self._finger_site_id).xpos
+            dc2 = np.asarray(self._disk_centre, dtype=np.float64)
+            gx2 = float(dc2[0]) + GA_PAD_Z
+            gy2 = float(dc2[1])
+            gz2 = float(dc2[2]) + GA_DISK_HALF_T + 0.0015
+            dxy2 = float(np.hypot(site2[0] - gx2, site2[1] - gy2))
+            rel2 = float(site2[2] - gz2)
+            od2 = RING_OD.get(getattr(self, "vision_disk", ""), 0.076)
+            w2 = float(self._get_gripper_width())
+            if (dxy2 < GA_XY and -0.004 < rel2 < 0.010
+                    and w2 > od2 + 0.004):
+                a[3] = 1.0
+                a[2] = min(float(a[2]), 0.0)
         e_raw = getattr(self, "_servo_err_raw", None)
         if (os.environ.get("TRANSPORT_LIFT_GATE", "0") != "0"
                 and getattr(self, "skill_stage", "") == "transport"
                 and float(getattr(self, "_servo_valid", 0.0)) > 0.0
                 and e_raw is not None
-                and 0.030 < float(self._get_gripper_width()) < 0.082):
+                and 0.030 < float(self._get_gripper_width()) < _ring_od(self) + 0.004):
             ez = float(np.asarray(e_raw, dtype=np.float64)[2])
             active = bool(getattr(self, "_lift_gate_active", False))
             if active and ez < LIFT_GATE_OFF:
@@ -213,7 +339,7 @@ def install(env_cls) -> None:
                 and getattr(self, "skill_stage", "") == "transport"
                 and float(getattr(self, "_servo_valid", 0.0)) > 0.0
                 and e_raw is not None
-                and 0.030 < float(self._get_gripper_width()) < 0.082):
+                and 0.030 < float(self._get_gripper_width()) < _ring_od(self) + 0.004):
             e = np.asarray(e_raw, dtype=np.float64)
             exy = float(np.hypot(e[0], e[1]))
             if exy > CARRY_XY and float(e[2]) > -CARRY_UP:
@@ -224,9 +350,41 @@ def install(env_cls) -> None:
         if getattr(self, "skill_stage", "") == "transport":
             w = float(self._get_gripper_width())
             w_prev = float(getattr(self, "_last_grip_w", 1.0))
+            # Contact width is the ring outer diameter (plus 4 mm): the old
+            # 82 mm upper bound marked the grasp "closed" while the jaws were
+            # still 30 mm from a small ring, so the force-hold/grip-hold
+            # interlocks stalled the closure on air.
+            ring_od = {"disk_l": 0.076, "disk_m": 0.064,
+                       "disk_s": 0.052}.get(
+                           getattr(self, "vision_disk", ""), 0.076)
+            geom_ok = True
+            if (getattr(self, "_disk_centre", None) is not None
+                    and self._finger_site_id is not None):
+                site_g = self.data.site(self._finger_site_id).xpos
+                dc_g = np.asarray(self._disk_centre, dtype=np.float64)
+                dxy_g = float(np.hypot(
+                    site_g[0] - (float(dc_g[0]) + GA_PAD_Z),
+                    site_g[1] - float(dc_g[1])))
+                rel_g = float(site_g[2] - (float(dc_g[2])
+                                           + GA_DISK_HALF_T + 0.0015))
+                # the ring must actually be between the pads, otherwise a
+                # free closure settling at ~50 mm would latch "grasped" on air
+                geom_ok = dxy_g < 0.010 and abs(rel_g) < 0.012
             if not getattr(self, "_grasp_closed", False):
-                if 0.030 < w < 0.082 and abs(w - w_prev) < 0.002:
+                if (ring_od - 0.006 < w < min(0.082, ring_od + 0.004)
+                        and abs(w - w_prev) < 0.002 and geom_ok):
                     self._grasp_closed = True
+            if (SLIP_RESET and getattr(self, "_grasp_closed", False)
+                    and w < ring_od - 0.010):
+                # ring slipped out of the jaws: reopen and let the assist
+                # re-approach the vision-estimated ring
+                self._grasp_closed = False
+                # Re-engage the grasp assist immediately: the policy tends to
+                # stay high after a slip and would not re-approach within the
+                # remaining budget.
+                self._ga_hover = GA_STEPS
+                self._ga_engaged = True
+                a[3] = -1.0
             self._last_grip_w = w
         # Pre-grasp xy centering: put the open jaws over the vision-estimated
         # ring before closing.  Off-centre grasps tilt the ring against the
@@ -248,10 +406,41 @@ def install(env_cls) -> None:
                 a[1] = float(np.clip(a[1] + GRASP_CENTER_K * dy / SERVO_S[1],
                                      -0.5, 0.5))
         # Never release a grasped disk during transport (optional).
+        if (LIFT_STALL
+                and getattr(self, "skill_stage", "") == "transport"
+                # only when the jaws hold a ring LARGER than the target
+                # (wrong-ring grasp of the disk below in a stack); a normal
+                # grasp has width ~= the target ring OD
+                and float(self._get_gripper_width()) > _ring_od(self) + 0.008
+                and getattr(self, "_disk_centre", None) is not None
+                and getattr(self, "_servo_err", None) is not None
+                and float(np.asarray(self._servo_err)[2]) > 0.020):
+            z_now = float(np.asarray(self._disk_centre)[2])
+            if self._ls_z is not None and (z_now - self._ls_z) > LS_DZ:
+                self._ls_count = 0
+            else:
+                self._ls_count = int(getattr(self, "_ls_count", 0)) + 1
+            self._ls_z = z_now
+            if self._ls_count >= LS_STEPS and self._ls_used < 2:
+                # ring bound on the post: reopen, lift, re-approach
+                self._ls_used += 1
+                self._ls_count = 0
+                self._grasp_closed = False
+                self._ga_hover = GA_STEPS
+                self._ga_engaged = True
+                a[3] = -1.0
+                a[2] = 0.10
         if (os.environ.get("TRANSPORT_FORCE_CLOSE", "0") != "0"
                 and getattr(self, "skill_stage", "") == "transport"
                 and getattr(self, "_grasp_closed", False)):
             a[3] = 1.0
+        if (GRIP_HOLD
+                and getattr(self, "skill_stage", "") == "transport"
+                and getattr(self, "_grasp_closed", False)):
+            w_hold = float(self._get_gripper_width())
+            if 0.030 < w_hold < 0.082:
+                a[3] = float(np.clip(w_hold / GRIP_HOLD_OPEN - 1.0,
+                                     -0.9, 0.9))
         k_in = float(os.environ.get("INSERT_SERVO", "0"))
         if (k_in > 0.0
                 and getattr(self, "skill_stage", "") == "insert"
@@ -350,8 +539,12 @@ def install(env_cls) -> None:
             w = float(self._get_gripper_width())
             rxy = float(np.hypot(e[0], e[1]))
             ez = float(e[2])
-            if (w > 0.030 and rxy < 0.0020
-                    and 0.008 < -ez < 0.045):
+            wzmax = float(os.environ.get(
+                "INSERT_WEDGE_ZMAX_MM", "0.045"))
+            wxy = float(os.environ.get(
+                "INSERT_WEDGE_XY_MM", "0.0020"))
+            if (w > 0.030 and rxy < wxy
+                    and 0.008 < -ez < wzmax):
                 prev = getattr(self, "_wedge_prev", None)
                 if prev is not None and abs(ez - prev) < 0.0005:
                     self._wedge_stall = int(getattr(

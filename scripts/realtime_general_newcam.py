@@ -44,7 +44,7 @@ app = Flask(__name__)
 
 TRANSPORT_CKPT = os.environ.get(
     "TRANSPORT_CKPT",
-    os.path.join(ROOT, "runs", "bc_vservo_transport_gen_v2_uni_sem7",
+    os.path.join(ROOT, "runs", "bc_vservo_transport_sem7_sgd180",
                  "best.ckpt"))
 INSERT_CKPT = os.environ.get(
     "INSERT_CKPT",

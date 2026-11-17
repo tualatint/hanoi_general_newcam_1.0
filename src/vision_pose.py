@@ -481,7 +481,8 @@ def estimate_table_z(points: np.ndarray,
 
 def estimate_peg_axis(points: np.ndarray, peg_xy_hint: np.ndarray,
                       radius: float = 0.007,
-                      rng: Optional[np.random.Generator] = None
+                      rng: Optional[np.random.Generator] = None,
+                      search_radius: float = 0.025,
                       ) -> Optional[dict]:
     """Estimate a post axis from the yellow side wall (vision only).
 
@@ -498,7 +499,7 @@ def estimate_peg_axis(points: np.ndarray, peg_xy_hint: np.ndarray,
     # side wall only: below the spherical cap, above the table
     m &= (points[:, 2] > 0.185) & (points[:, 2] < 0.258)
     m &= (np.hypot(points[:, 0] - peg_xy_hint[0],
-                   points[:, 1] - peg_xy_hint[1]) < 0.025)
+                   points[:, 1] - peg_xy_hint[1]) < search_radius)
     xyz = points[m][:, :3]
     if len(xyz) < 8:
         return None

@@ -1,0 +1,24 @@
+{
+  "version": "v1.2",
+  "episodes": 120,
+  "success": 120,
+  "success_rate": 1.0,
+  "mean_steps": 56.983333333333334,
+  "levels": {
+    "0": 48,
+    "1": 47,
+    "2": 25
+  },
+  "disks": {
+    "disk_s": 70,
+    "disk_m": 29,
+    "disk_l": 21
+  },
+  "switches": {
+    "handoff_vision": 120
+  },
+  "wilson95": [
+    0.9689797289440706,
+    1
+  ]
+}

@@ -299,12 +299,18 @@ class VservoEnv(HanoiEnv):
     # ------------------------------------------------------------------
     def _update_vision(self, dense: np.ndarray):
         self._vision_frames += 1
+        nominal = getattr(self, "_peg_nominal", None)
         hint = (self._post_axis if self._post_axis is not None
-                else np.asarray(PEG_XY[self.goal_peg], dtype=np.float64))
+                else (np.asarray(nominal[self.goal_peg], dtype=np.float64)
+                      if nominal is not None
+                      else np.asarray(PEG_XY[self.goal_peg],
+                                      dtype=np.float64)))
         if (not getattr(self, "static_cache", False)
                 or self._vision_frames <= 5
                 or self._post_axis is None or self._table_z is None):
-            post = estimate_peg_axis(dense, hint, rng=self._vision_rng)
+            post = estimate_peg_axis(
+                dense, hint, rng=self._vision_rng,
+                search_radius=getattr(self, "_peg_search_radius", 0.025))
             table = estimate_table_z(dense, rng=self._vision_rng)
         else:
             post = None

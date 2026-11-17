@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the v1.1 8786 configuration: ONE transport model + insert v2b.
+# Run the v1.2 8786 configuration: ONE transport model + insert v2b.
 #
 #   ./run_server.sh                 # port 8788, seed 896250, loops
 #   PORT=8790 ./run_server.sh
@@ -12,7 +12,7 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 source scripts/env.sh
 
-export TRANSPORT_CKPT="${TRANSPORT_CKPT:-$ROOT/runs/bc_vservo_transport_gen_v2_uni_sem7/best.ckpt}"
+export TRANSPORT_CKPT="${TRANSPORT_CKPT:-$ROOT/runs/bc_vservo_transport_sem7_sgd180/best.ckpt}"
 export INSERT_CKPT="${INSERT_CKPT:-$ROOT/runs/bc_vservo_insert_v2b/best.ckpt}"
 export P0_CKPT="${P0_CKPT:-}"
 export P1_CKPT="${P1_CKPT:-}"
@@ -24,6 +24,11 @@ export INSERT_SAMPLES="${INSERT_SAMPLES:-1}"  # insert is single-sample
 export EXEC_STEPS="${EXEC_STEPS:-4}"
 export INSERT_EXEC_STEPS="${INSERT_EXEC_STEPS:-2}"
 export TRANSPORT_FORCE_CLOSE="${TRANSPORT_FORCE_CLOSE:-1}"
+export TRANSPORT_GRASP_ALIGN="${TRANSPORT_GRASP_ALIGN:-1}"
+export TRANSPORT_GRASP_ASSIST="${TRANSPORT_GRASP_ASSIST:-1}"
+export TRANSPORT_GRASP_COMMIT="${TRANSPORT_GRASP_COMMIT:-1}"
+export TRANSPORT_LIFT_STALL="${TRANSPORT_LIFT_STALL:-1}"
+export TRANSPORT_SLIP_RESET="${TRANSPORT_SLIP_RESET:-1}"
 export TRANSPORT_GRASP_GATE="${TRANSPORT_GRASP_GATE:-1}"
 export TRANSPORT_GRASP_GATE_MM="${TRANSPORT_GRASP_GATE_MM:-0.025}"
 export TRANSPORT_GRASP_GATE_LO_MM="${TRANSPORT_GRASP_GATE_LO_MM:--0.015}"
@@ -54,6 +59,11 @@ if [ "${POLICY_ONLY:-0}" = "1" ]; then
     export TRANSPORT_FORCE_CLOSE=0
     export TRANSPORT_LIFT_GATE=0
     export TRANSPORT_GRASP_GATE=0
+    export TRANSPORT_GRASP_ALIGN=0
+    export TRANSPORT_GRASP_ASSIST=0
+    export TRANSPORT_GRASP_COMMIT=0
+    export TRANSPORT_LIFT_STALL=0
+    export TRANSPORT_SLIP_RESET=0
     export INSERT_WEDGE_RELEASE=0
     export VSERVO_STATIC_CACHE=0
     export VSERVO_VISION_SKIP=0
@@ -66,5 +76,5 @@ if [ "${NO_LOOP:-0}" = "1" ]; then args+=(--no-loop); fi
 
 echo "[run_server] transport=$TRANSPORT_CKPT"
 echo "[run_server] N_SAMPLES=$N_SAMPLES INSERT_SAMPLES=$INSERT_SAMPLES"
-echo "[run_server] cache=$VSERVO_STATIC_CACHE skip=$VSERVO_VISION_SKIP semantic=$VSERVO_SEMANTIC_CHANNEL terminal_servo=$TRANSPORT_TERMINAL_SERVO force_close=$TRANSPORT_FORCE_CLOSE lift_gate=$TRANSPORT_LIFT_GATE grasp_gate=$TRANSPORT_GRASP_GATE"
+echo "[run_server] cache=$VSERVO_STATIC_CACHE skip=$VSERVO_VISION_SKIP semantic=$VSERVO_SEMANTIC_CHANNEL terminal_servo=$TRANSPORT_TERMINAL_SERVO force_close=$TRANSPORT_FORCE_CLOSE lift_gate=$TRANSPORT_LIFT_GATE grasp_gate=$TRANSPORT_GRASP_GATE align=$TRANSPORT_GRASP_ALIGN assist=$TRANSPORT_GRASP_ASSIST commit=$TRANSPORT_GRASP_COMMIT lift_stall=$TRANSPORT_LIFT_STALL slip_reset=$TRANSPORT_SLIP_RESET"
 exec "$PY" -u scripts/realtime_general_newcam.py "${args[@]}"
