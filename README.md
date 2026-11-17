@@ -100,6 +100,14 @@ PORT=8790 SEED=900000 ./run_server.sh
 - The semantic channel is vision-derived but still an engineered observation;
   it must be reproducible on the real camera.
 
+## Extra: distilled 1-step students (`distill/`)
+
+An optional extra variant: one-step DDIM students of the two v1.2 policies
+(9.3x / 8.8x faster policy calls). It lives in `distill/`, ships as the
+`v1.3-distill` release assets, and does **not** modify the v1.2 checkpoints,
+`run_server.sh`, or this release. Paired n=200 on fresh sigma=12 seeds:
+teacher 200/200, distilled 198/200 = 99.0%. See `distill/README.md`.
+
 ## License
 
 Apache-2.0, inherited from RL-100. See `LICENSE` and `NOTICE`.

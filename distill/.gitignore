@@ -1,0 +1,6 @@
+runs/**/*.ckpt
+runs/**/*.pt
+*.part
+data/
+logs/
+results/
